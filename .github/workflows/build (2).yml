@@ -1,0 +1,76 @@
+name: Build IPA
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Find project folder
+        id: find
+        run: |
+          echo "Files in repo:"
+          find . -path ./.git -prune -o -type f -print | sort
+          P=$(find . -path ./.git -prune -o -iname 'project.yml' -print | head -1)
+          if [ -z "$P" ]; then
+            echo "::error::No project.yml anywhere in the repo. It was never uploaded, or has a different name (see file list above)."
+            exit 1
+          fi
+          D=$(dirname "$P")
+          echo "Found $P"
+          echo "dir=$D" >> "$GITHUB_OUTPUT"
+          echo "file=$(basename "$P")" >> "$GITHUB_OUTPUT"
+
+      - name: Check project files
+        working-directory: ${{ steps.find.outputs.dir }}
+        run: |
+          missing=0
+          for f in icon-blue.png icon-red.png Sources/App.swift Sources/Explorer.swift; do
+            if [ ! -f "$f" ]; then
+              echo "::error::Missing $f next to project.yml"
+              missing=1
+            fi
+          done
+          exit $missing
+
+      - name: Make icon catalog
+        working-directory: ${{ steps.find.outputs.dir }}
+        run: |
+          A=Sources/Assets.xcassets
+          mkdir -p $A/AppIcon.appiconset $A/AppIconRed.appiconset
+          cp icon-blue.png $A/AppIcon.appiconset/icon.png
+          cp icon-red.png $A/AppIconRed.appiconset/icon.png
+          echo '{"info":{"author":"xcode","version":1}}' > $A/Contents.json
+          J='{"images":[{"filename":"icon.png","idiom":"universal","platform":"ios","size":"1024x1024"}],"info":{"author":"xcode","version":1}}'
+          echo "$J" > $A/AppIcon.appiconset/Contents.json
+          echo "$J" > $A/AppIconRed.appiconset/Contents.json
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate project
+        working-directory: ${{ steps.find.outputs.dir }}
+        run: xcodegen generate --spec "${{ steps.find.outputs.file }}"
+
+      - name: Build unsigned
+        working-directory: ${{ steps.find.outputs.dir }}
+        run: |
+          xcodebuild -project Aufy.xcodeproj -scheme Aufy \
+            -configuration Release -sdk iphoneos -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" build
+
+      - name: Package IPA
+        working-directory: ${{ steps.find.outputs.dir }}
+        run: |
+          mkdir Payload
+          cp -R build/Build/Products/Release-iphoneos/Aufy.app Payload/
+          zip -r Aufy.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Aufy-ipa
+          path: ${{ steps.find.outputs.dir }}/Aufy.ipa
